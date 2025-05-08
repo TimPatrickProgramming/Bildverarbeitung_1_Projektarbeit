@@ -1,15 +1,51 @@
-import tkinter as tk
-from tkinter import ttk
 import cv2
 import numpy as np
+import tkinter as tk
+from PIL import Image, ImageTk
 from ultralytics import YOLO
-import threading
 
-# Globale Variable
-FLASCHE_VOL_LITER = 1.5
-laufend = False
+# Flaschengrößen-Optionen
+volumen_optionen = {
+    "0.33 L": 0.33,
+    "0.5 L": 0.5,
+    "1.0 L": 1.0,
+    "1.25 L": 1.25,
+    "1.5 L": 1.5
+}
 
-# Volumenfunktion (wie im bisherigen Code)
+# TK Fensterstruktur
+root = tk.Tk()
+root.title("Flaschenanalyse")
+root.geometry("1200x720")
+
+left_frame = tk.Frame(root, width=250, bg="white")
+left_frame.pack(side="left", fill="y")
+
+right_frame = tk.Frame(root, bg="black")
+right_frame.pack(side="right", expand=True, fill="both")
+
+# Dropdown-Menü
+selected_volume = tk.StringVar(root)
+selected_volume.set("1.5 L")
+tk.Label(left_frame, text="Flaschengröße auswählen:", bg="white").pack(pady=(20, 5))
+dropdown = tk.OptionMenu(left_frame, selected_volume, *volumen_optionen.keys())
+dropdown.pack(pady=(0, 20))
+
+# Info-Anzeige
+info_label = tk.Label(left_frame, text="Werte", justify="left", bg="white", font=("Courier", 15))
+info_label.pack(padx=10, anchor="nw")
+
+# Videoanzeige
+video_label = tk.Label(right_frame)
+video_label.pack(fill="both", expand=True)
+
+# YOLO Setup
+model = YOLO("yolov8n.pt")
+cap = cv2.VideoCapture(0)
+previous_contour = None
+stable_counter = 0
+max_missing_frames = 15
+
 def berechne_volumenbereich(smoothed_contour, y_start, y_end):
     x, y, w, h = cv2.boundingRect(smoothed_contour)
     radii = []
@@ -28,133 +64,102 @@ def berechne_volumenbereich(smoothed_contour, y_start, y_end):
     vol_px3 = np.sum(np.pi * (radii ** 2) * dy)
     return vol_px3, len(radii)
 
-# Erkennungsschleife in separatem Thread
-def erkennung_starten():
-    global FLASCHE_VOL_LITER, laufend
-    model = YOLO("yolov8n.pt")
-    cap = cv2.VideoCapture(0)
-    previous_contour = None
-    stable_counter = 0
-    max_missing_frames = 15
+def update_frame():
+    global previous_contour, stable_counter
 
-    while laufend:
-        ret, frame = cap.read()
-        if not ret:
-            break
+    ret, frame = cap.read()
+    if not ret:
+        return
 
-        results = model(frame)
-        current_contour = None
+    selected_liter = volumen_optionen[selected_volume.get()]
+    results = model(frame)
+    current_contour = None
 
-        for r in results:
-            for box in r.boxes:
-                if model.names[int(box.cls[0])] == "bottle":
-                    x1, y1, x2, y2 = map(int, box.xyxy[0])
-                    padding = 5
-                    x1_p, y1_p = x1 + padding, y1 + padding
-                    x2_p, y2_p = x2 - padding, y2 - padding
-                    roi = frame[y1_p:y2_p, x1_p:x2_p]
-                    roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-                    clahe = cv2.createCLAHE(clipLimit=5.0, tileGridSize=(8, 8))
-                    enhanced = clahe.apply(roi_gray)
-                    blurred = cv2.GaussianBlur(enhanced, (3, 3), 0)
-                    sobel = np.uint8(np.clip(np.hypot(
-                        cv2.Sobel(blurred, cv2.CV_64F, 1, 0),
-                        cv2.Sobel(blurred, cv2.CV_64F, 0, 1)
-                    ) * 2.0, 0, 255))
-                    _, binary = cv2.threshold(sobel, 100, 255, cv2.THRESH_BINARY)
-                    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
-                    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                    valid = [c for c in contours if cv2.contourArea(c) > 300]
-                    if valid:
-                        largest = max(valid, key=cv2.contourArea)
-                        current_contour = largest + [x1_p, y1_p]
+    for r in results:
+        for box in r.boxes:
+            if model.names[int(box.cls[0])] == "bottle":
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
+                padding = 5
+                x1_p, y1_p = x1 + padding, y1 + padding
+                x2_p, y2_p = x2 - padding, y2 - padding
+                roi = frame[y1_p:y2_p, x1_p:x2_p]
+                roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+                clahe = cv2.createCLAHE(clipLimit=5.0, tileGridSize=(8, 8))
+                enhanced = clahe.apply(roi_gray)
+                blurred = cv2.GaussianBlur(enhanced, (3, 3), 0)
+                sobel = np.uint8(np.clip(np.hypot(
+                    cv2.Sobel(blurred, cv2.CV_64F, 1, 0),
+                    cv2.Sobel(blurred, cv2.CV_64F, 0, 1)
+                ) * 2.0, 0, 255))
+                _, binary = cv2.threshold(sobel, 100, 255, cv2.THRESH_BINARY)
+                binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+                contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                valid = [c for c in contours if cv2.contourArea(c) > 300]
+                if valid:
+                    largest = max(valid, key=cv2.contourArea)
+                    current_contour = largest + [x1_p, y1_p]
 
-        if current_contour is not None:
-            if previous_contour is not None and previous_contour.shape == current_contour.shape:
-                if np.mean(np.abs(current_contour.astype(np.float32) - previous_contour.astype(np.float32))) < 10:
-                    previous_contour = current_contour
-                    stable_counter = 0
-            else:
+    if current_contour is not None:
+        if previous_contour is not None and previous_contour.shape == current_contour.shape:
+            if np.mean(np.abs(current_contour.astype(np.float32) - previous_contour.astype(np.float32))) < 10:
                 previous_contour = current_contour
                 stable_counter = 0
         else:
-            stable_counter += 1
-            if stable_counter > max_missing_frames:
-                previous_contour = None
+            previous_contour = current_contour
+            stable_counter = 0
+    else:
+        stable_counter += 1
+        if stable_counter > max_missing_frames:
+            previous_contour = None
 
-        if previous_contour is not None:
-            epsilon = 0.01 * cv2.arcLength(previous_contour, True)
-            smoothed = cv2.approxPolyDP(previous_contour, epsilon, True)
-            x, y, w, h = cv2.boundingRect(smoothed)
-            fixed_deckel_h = int(0.08 * h)
-            mask = np.zeros_like(frame[:, :, 0])
-            cv2.drawContours(mask, [smoothed], -1, 255, -1)
-            deckel_mask = np.zeros_like(mask)
-            cv2.rectangle(deckel_mask, (x, y), (x + w, y + fixed_deckel_h), 255, -1)
-            mask_no_deckel = cv2.subtract(mask, deckel_mask)
-            masked = cv2.bitwise_and(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), mask_no_deckel)
+    fuellstand_text = "Fuellstand: ---\nFuellvol.: --- L\nGesamtvol.: --- L"
 
-            strip = masked[y:y + h, x + w // 2 - 2:x + w // 2 + 2]
-            profile = np.mean(strip, axis=1)
-            diff = np.diff(profile)
+    if previous_contour is not None:
+        epsilon = 0.01 * cv2.arcLength(previous_contour, True)
+        smoothed = cv2.approxPolyDP(previous_contour, epsilon, True)
+        cv2.drawContours(frame, [smoothed], -1, (0, 255, 255), 1)
 
-            if len(diff) > 0:
-                idx = np.argmax(diff)
-                y_water = y + idx
-                percent = (h - idx) / h
-                vol_fuell_px3, _ = berechne_volumenbereich(smoothed, y + idx, y + h)
-                vol_gesamt_px3, _ = berechne_volumenbereich(smoothed, y, y + h)
-                voll_liter = (vol_fuell_px3 / vol_gesamt_px3) * FLASCHE_VOL_LITER
+        x, y, w, h = cv2.boundingRect(smoothed)
+        fixed_deckel_h = int(0.08 * h)
+        mask = np.zeros_like(frame[:, :, 0])
+        cv2.drawContours(mask, [smoothed], -1, 255, -1)
+        deckel_mask = np.zeros_like(mask)
+        cv2.rectangle(deckel_mask, (x, y), (x + w, y + fixed_deckel_h), 255, -1)
+        mask_no_deckel = cv2.subtract(mask, deckel_mask)
+        masked = cv2.bitwise_and(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), mask_no_deckel)
+        strip = masked[y:y + h, x + w // 2 - 2:x + w // 2 + 2]
+        profile = np.mean(strip, axis=1)
+        diff = np.diff(profile)
 
-                cv2.line(frame, (x, y_water), (x + w, y_water), (0, 0, 255), 2)
-                texts = [
-                    f"Fuellstand: {int(percent * 100)}%",
-                    f"Fuellvolumen: {voll_liter:.2f} L",
-                    f"Gesamtvolumen: {FLASCHE_VOL_LITER:.2f} L"
-                ]
-                for i, t in enumerate(texts):
-                    cv2.putText(frame, t, (20, 30 + i * 30),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+        if len(diff) > 0:
+            idx = np.argmax(diff)
+            y_water = y + idx
+            cv2.line(frame, (x, y_water), (x + w, y_water), (0, 0, 255), 2)
+            percent = (h - idx) / h
+            vol_fuell_px3, _ = berechne_volumenbereich(smoothed, y + idx, y + h)
+            vol_gesamt_px3, _ = berechne_volumenbereich(smoothed, y, y + h)
+            voll_liter = (vol_fuell_px3 / vol_gesamt_px3) * selected_liter
+            fuellstand_text = f"Fuellstand: {int(percent * 100)}%\nFuellvol.: {voll_liter:.2f} L\nGesamtvol.: {selected_liter:.2f} L"
 
-        frame = cv2.resize(frame, None, fx=2.0, fy=2.0)
-        cv2.imshow("Flaschenanalyse (GUI)", frame)
-        if cv2.waitKey(1) == ord('q'):
-            laufend = False
-            break
+    # Text und Video aktualisieren
+    info_label.config(text=fuellstand_text)
 
-    cap.release()
-    cv2.destroyAllWindows()
+    # Livebild dynamisch skalieren
+    target_w = video_label.winfo_width()
+    target_h = video_label.winfo_height()
+    if target_w < 100 or target_h < 100:
+        target_w, target_h = 640, 480
 
-# GUI Fenster
-def gui_start():
-    def set_volumen(event):
-        global FLASCHE_VOL_LITER
-        auswahl = dropdown.get()
-        try:
-            FLASCHE_VOL_LITER = float(auswahl.split(" ")[0])
-        except:
-            pass
+    frame_resized = cv2.resize(frame, (target_w, target_h))
+    frame_rgb = cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB)
+    imgtk = ImageTk.PhotoImage(image=Image.fromarray(frame_rgb))
+    video_label.imgtk = imgtk
+    video_label.configure(image=imgtk)
 
-    def start():
-        global laufend
-        laufend = True
-        t = threading.Thread(target=erkennung_starten)
-        t.start()
+    root.after(10, update_frame)
 
-    root = tk.Tk()
-    root.title("Flaschenanalyse GUI")
-    root.geometry("300x150")
-
-    ttk.Label(root, text="Waehle Flaschenvolumen:").pack(pady=5)
-    dropdown = ttk.Combobox(root, values=["0.5 L", "1.0 L", "1.5 L", "2.0 L"])
-    dropdown.current(2)
-    dropdown.bind("<<ComboboxSelected>>", set_volumen)
-    dropdown.pack(pady=5)
-
-    start_btn = ttk.Button(root, text="Starte Analyse", command=start)
-    start_btn.pack(pady=10)
-
-    root.mainloop()
-
-if __name__ == "__main__":
-    gui_start()
+# Starten
+update_frame()
+root.mainloop()
+cap.release()
+cv2.destroyAllWindows()
