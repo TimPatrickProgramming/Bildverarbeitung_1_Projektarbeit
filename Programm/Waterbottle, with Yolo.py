@@ -2,7 +2,6 @@ from ultralytics import YOLO
 import cv2
 import numpy as np
 
-# Parameter
 threshold_val = 100
 sobel_gain = 2.0
 min_area = 300
@@ -31,7 +30,6 @@ while True:
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (120, 120, 120), 1)
 
-                # ROI vorbereiten
                 padding = 5
                 x1_p, y1_p = x1 + padding, y1 + padding
                 x2_p, y2_p = x2 - padding, y2 - padding
@@ -42,7 +40,6 @@ while True:
                 enhanced = clahe.apply(roi_gray)
                 blurred = cv2.GaussianBlur(enhanced, (3, 3), 0)
 
-                # Sobel-Kanten
                 sobelx = cv2.Sobel(blurred, cv2.CV_64F, 1, 0, ksize=3)
                 sobely = cv2.Sobel(blurred, cv2.CV_64F, 0, 1, ksize=3)
                 sobel = cv2.magnitude(sobelx, sobely)
@@ -52,7 +49,6 @@ while True:
                 kernel = np.ones((3, 3), np.uint8)
                 binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
 
-                # Konturen erkennen
                 contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                 valid = [cnt for cnt in contours if cv2.contourArea(cnt) > min_area]
 
@@ -60,7 +56,7 @@ while True:
                     largest = max(valid, key=cv2.contourArea)
                     current_contour = largest + [x1_p, y1_p]
 
-    # --- Kontur-Stabilisierung ---
+    # --- Stabilisierung ---
     if current_contour is not None:
         if previous_contour is not None and previous_contour.shape == current_contour.shape:
             diff = np.mean(np.abs(current_contour.astype(np.float32) - previous_contour.astype(np.float32)))
@@ -75,34 +71,51 @@ while True:
         if stable_counter > max_missing_frames:
             previous_contour = None
 
-    # --- Anzeige & Wasserstandsanalyse ---
+    # --- Analyse & Anzeige ---
     if previous_contour is not None:
         cv2.drawContours(frame, [previous_contour], -1, (0, 255, 0), 2)
 
-        # Maske aus Kontur
+        # Maske aus Flasche
         mask = np.zeros_like(frame[:, :, 0])
         cv2.drawContours(mask, [previous_contour], -1, 255, -1)
-        masked = cv2.bitwise_and(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), mask)
 
-        # Vertikale Profilmitte analysieren
         x, y, w, h = cv2.boundingRect(previous_contour)
-        profile_strip = masked[y:y+h, x + w//2 - 2 : x + w//2 + 2]
+
+        # Deckelregion definieren
+        top_region = mask[y:y + int(0.25 * h), x:x + w]
+        deckel_contours, _ = cv2.findContours(top_region, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        deckel_mask = np.zeros_like(mask)
+        for cnt in deckel_contours:
+            dx, dy, dw, dh = cv2.boundingRect(cnt)
+            aspect = dw / max(dh, 1)
+            if 0.8 < aspect < 2.5 and dh < h * 0.15:
+                cv2.drawContours(deckel_mask[y:y + int(0.25 * h), x:x + w], [cnt], -1, 255, -1)
+
+        # Deckel aus der Flaschenmaske entfernen
+        mask_no_deckel = cv2.subtract(mask, deckel_mask)
+        masked = cv2.bitwise_and(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), mask_no_deckel)
+
+        # Wasserstand ermitteln
+        profile_strip = masked[y:y + h, x + w // 2 - 2:x + w // 2 + 2]
         vertical_profile = np.mean(profile_strip, axis=1)
 
-        # Differenz bilden, um Helligkeitsänderung zu finden
         diff = np.diff(vertical_profile)
         if len(diff) > 0:
-            water_idx = np.argmax(diff)  # stärkster heller Übergang
+            water_idx = np.argmax(diff)
             water_y = y + water_idx
 
-            # Linie & Text
+            # Linie & Prozent
             cv2.line(frame, (x, water_y), (x + w, water_y), (0, 0, 255), 2)
             f_percent = int(100 * (h - water_idx) / h)
             cv2.putText(frame, f"Fuellstand: {f_percent}%", (x + w + 10, water_y),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
-    # Anzeige
-    cv2.imshow("Flaschenanalyse (Wasserstand)", frame)
+    # Ausgabe skalieren (2x)
+    scale = 2.0
+    frame = cv2.resize(frame, None, fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
+
+    cv2.imshow("Flaschenanalyse (Deckel erkannt)", frame)
     if cv2.waitKey(1) == ord('q'):
         break
 
