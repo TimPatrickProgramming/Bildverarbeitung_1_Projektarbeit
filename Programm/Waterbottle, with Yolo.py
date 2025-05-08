@@ -28,8 +28,6 @@ while True:
 
             if label == "bottle":
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (120, 120, 120), 1)
-
                 padding = 5
                 x1_p, y1_p = x1 + padding, y1 + padding
                 x2_p, y2_p = x2 - padding, y2 - padding
@@ -71,51 +69,42 @@ while True:
         if stable_counter > max_missing_frames:
             previous_contour = None
 
-    # --- Analyse & Anzeige ---
+    # --- Anzeige & Analyse ---
     if previous_contour is not None:
         cv2.drawContours(frame, [previous_contour], -1, (0, 255, 0), 2)
 
-        # Maske aus Flasche
         mask = np.zeros_like(frame[:, :, 0])
         cv2.drawContours(mask, [previous_contour], -1, 255, -1)
 
         x, y, w, h = cv2.boundingRect(previous_contour)
 
-        # Deckelregion definieren
-        top_region = mask[y:y + int(0.25 * h), x:x + w]
-        deckel_contours, _ = cv2.findContours(top_region, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
+        # Feste Deckelmaske (oberste 8 %)
+        fixed_deckel_h = int(0.08 * h)
         deckel_mask = np.zeros_like(mask)
-        for cnt in deckel_contours:
-            dx, dy, dw, dh = cv2.boundingRect(cnt)
-            aspect = dw / max(dh, 1)
-            if 0.8 < aspect < 2.5 and dh < h * 0.15:
-                cv2.drawContours(deckel_mask[y:y + int(0.25 * h), x:x + w], [cnt], -1, 255, -1)
+        cv2.rectangle(deckel_mask, (x, y), (x + w, y + fixed_deckel_h), 255, -1)
 
-        # Deckel aus der Flaschenmaske entfernen
+        # Maske ohne Deckel
         mask_no_deckel = cv2.subtract(mask, deckel_mask)
         masked = cv2.bitwise_and(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), mask_no_deckel)
 
-        # Wasserstand ermitteln
+        # Wasserstandsanalyse
         profile_strip = masked[y:y + h, x + w // 2 - 2:x + w // 2 + 2]
         vertical_profile = np.mean(profile_strip, axis=1)
-
         diff = np.diff(vertical_profile)
+
         if len(diff) > 0:
             water_idx = np.argmax(diff)
             water_y = y + water_idx
-
-            # Linie & Prozent
             cv2.line(frame, (x, water_y), (x + w, water_y), (0, 0, 255), 2)
             f_percent = int(100 * (h - water_idx) / h)
             cv2.putText(frame, f"Fuellstand: {f_percent}%", (x + w + 10, water_y),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
-    # Ausgabe skalieren (2x)
+    # Vergrößerte Ausgabe
     scale = 2.0
     frame = cv2.resize(frame, None, fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
 
-    cv2.imshow("Flaschenanalyse (Deckel erkannt)", frame)
+    cv2.imshow("Flaschenanalyse (Stable Final)", frame)
     if cv2.waitKey(1) == ord('q'):
         break
 
