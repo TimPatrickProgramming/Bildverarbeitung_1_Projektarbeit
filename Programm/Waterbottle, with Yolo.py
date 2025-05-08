@@ -2,16 +2,14 @@ from ultralytics import YOLO
 import cv2
 import numpy as np
 
-# Feste Parameter
+# Parameter
 threshold_val = 100
 sobel_gain = 2.0
 min_area = 300
 
-# Modell & Kamera
 model = YOLO("yolov8n.pt")
 cap = cv2.VideoCapture(0)
 
-# Stabilitätsspeicher
 previous_contour = None
 stable_counter = 0
 max_missing_frames = 15
@@ -33,13 +31,13 @@ while True:
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (120, 120, 120), 1)
 
+                # ROI vorbereiten
                 padding = 5
                 x1_p, y1_p = x1 + padding, y1 + padding
                 x2_p, y2_p = x2 - padding, y2 - padding
                 roi = frame[y1_p:y2_p, x1_p:x2_p]
                 roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
 
-                # Kontrastverstärkung
                 clahe = cv2.createCLAHE(clipLimit=5.0, tileGridSize=(8, 8))
                 enhanced = clahe.apply(roi_gray)
                 blurred = cv2.GaussianBlur(enhanced, (3, 3), 0)
@@ -50,12 +48,11 @@ while True:
                 sobel = cv2.magnitude(sobelx, sobely)
                 sobel = np.uint8(np.clip(sobel * sobel_gain, 0, 255))
 
-                # Binärschwelle
                 _, binary = cv2.threshold(sobel, threshold_val, 255, cv2.THRESH_BINARY)
                 kernel = np.ones((3, 3), np.uint8)
                 binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
 
-                # Konturen finden
+                # Konturen erkennen
                 contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                 valid = [cnt for cnt in contours if cv2.contourArea(cnt) > min_area]
 
@@ -67,7 +64,7 @@ while True:
     if current_contour is not None:
         if previous_contour is not None and previous_contour.shape == current_contour.shape:
             diff = np.mean(np.abs(current_contour.astype(np.float32) - previous_contour.astype(np.float32)))
-            if diff < 10:  # Änderung ist klein → aktualisiere
+            if diff < 10:
                 previous_contour = current_contour
                 stable_counter = 0
         else:
@@ -76,14 +73,36 @@ while True:
     else:
         stable_counter += 1
         if stable_counter > max_missing_frames:
-            previous_contour = None  # Zurücksetzen bei zu vielen fehlenden Frames
+            previous_contour = None
 
-    # --- Kontur anzeigen ---
+    # --- Anzeige & Wasserstandsanalyse ---
     if previous_contour is not None:
         cv2.drawContours(frame, [previous_contour], -1, (0, 255, 0), 2)
 
+        # Maske aus Kontur
+        mask = np.zeros_like(frame[:, :, 0])
+        cv2.drawContours(mask, [previous_contour], -1, 255, -1)
+        masked = cv2.bitwise_and(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), mask)
+
+        # Vertikale Profilmitte analysieren
+        x, y, w, h = cv2.boundingRect(previous_contour)
+        profile_strip = masked[y:y+h, x + w//2 - 2 : x + w//2 + 2]
+        vertical_profile = np.mean(profile_strip, axis=1)
+
+        # Differenz bilden, um Helligkeitsänderung zu finden
+        diff = np.diff(vertical_profile)
+        if len(diff) > 0:
+            water_idx = np.argmax(diff)  # stärkster heller Übergang
+            water_y = y + water_idx
+
+            # Linie & Text
+            cv2.line(frame, (x, water_y), (x + w, water_y), (0, 0, 255), 2)
+            f_percent = int(100 * (h - water_idx) / h)
+            cv2.putText(frame, f"Fuellstand: {f_percent}%", (x + w + 10, water_y),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+
     # Anzeige
-    cv2.imshow("Flaschenerkennung (stabilisiert)", frame)
+    cv2.imshow("Flaschenanalyse (Wasserstand)", frame)
     if cv2.waitKey(1) == ord('q'):
         break
 
