@@ -4,7 +4,7 @@ import tkinter as tk
 from PIL import Image, ImageTk
 from ultralytics import YOLO
 
-# Flaschengrößen-Optionen
+# Dropdown-Optionen
 volumen_optionen = {
     "0.33 L": 0.33,
     "0.5 L": 0.5,
@@ -13,7 +13,7 @@ volumen_optionen = {
     "1.5 L": 1.5
 }
 
-# TK Fensterstruktur
+# TK GUI Setup
 root = tk.Tk()
 root.title("Flaschenanalyse")
 root.geometry("1200x720")
@@ -24,27 +24,31 @@ left_frame.pack(side="left", fill="y")
 right_frame = tk.Frame(root, bg="black")
 right_frame.pack(side="right", expand=True, fill="both")
 
-# Dropdown-Menü
 selected_volume = tk.StringVar(root)
 selected_volume.set("1.5 L")
 tk.Label(left_frame, text="Flaschengröße auswählen:", bg="white").pack(pady=(20, 5))
 dropdown = tk.OptionMenu(left_frame, selected_volume, *volumen_optionen.keys())
 dropdown.pack(pady=(0, 20))
 
-# Info-Anzeige
-info_label = tk.Label(left_frame, text="Werte", justify="left", bg="white", font=("Courier", 15))
+info_label = tk.Label(left_frame, text="Werte", justify="left", bg="white", font=("Courier", 12))
 info_label.pack(padx=10, anchor="nw")
 
-# Videoanzeige
 video_label = tk.Label(right_frame)
 video_label.pack(fill="both", expand=True)
 
-# YOLO Setup
+# YOLO Modell
 model = YOLO("yolov8n.pt")
 cap = cv2.VideoCapture(0)
+
 previous_contour = None
 stable_counter = 0
 max_missing_frames = 15
+
+frame_count = 0
+update_interval = 5
+last_percent = None
+last_volume = None
+last_y_water = None
 
 def berechne_volumenbereich(smoothed_contour, y_start, y_end):
     x, y, w, h = cv2.boundingRect(smoothed_contour)
@@ -65,7 +69,8 @@ def berechne_volumenbereich(smoothed_contour, y_start, y_end):
     return vol_px3, len(radii)
 
 def update_frame():
-    global previous_contour, stable_counter
+    global previous_contour, stable_counter, frame_count
+    global last_percent, last_volume, last_y_water
 
     ret, frame = cap.read()
     if not ret:
@@ -113,6 +118,7 @@ def update_frame():
             previous_contour = None
 
     fuellstand_text = "Fuellstand: ---\nFuellvol.: --- L\nGesamtvol.: --- L"
+    frame_count += 1
 
     if previous_contour is not None:
         epsilon = 0.01 * cv2.arcLength(previous_contour, True)
@@ -134,17 +140,27 @@ def update_frame():
         if len(diff) > 0:
             idx = np.argmax(diff)
             y_water = y + idx
-            cv2.line(frame, (x, y_water), (x + w, y_water), (0, 0, 255), 2)
             percent = (h - idx) / h
             vol_fuell_px3, _ = berechne_volumenbereich(smoothed, y + idx, y + h)
             vol_gesamt_px3, _ = berechne_volumenbereich(smoothed, y, y + h)
             voll_liter = (vol_fuell_px3 / vol_gesamt_px3) * selected_liter
-            fuellstand_text = f"Fuellstand: {int(percent * 100)}%\nFuellvol.: {voll_liter:.2f} L\nGesamtvol.: {selected_liter:.2f} L"
 
-    # Text und Video aktualisieren
+            if last_y_water is None or abs(y_water - last_y_water) > 2:
+                last_y_water = y_water
+
+            last_percent = percent
+            last_volume = voll_liter
+
+        # Linie immer zeichnen
+        if last_y_water:
+            cv2.line(frame, (x, last_y_water), (x + w, last_y_water), (0, 0, 255), 2)
+
+        if last_percent is not None and last_volume is not None:
+            fuellstand_text = f"Fuellstand: {int(last_percent * 100)}%\nFuellvol.: {last_volume:.2f} L\nGesamtvol.: {selected_liter:.2f} L"
+
     info_label.config(text=fuellstand_text)
 
-    # Livebild dynamisch skalieren
+    # Dynamische Skalierung des Video-Fensters
     target_w = video_label.winfo_width()
     target_h = video_label.winfo_height()
     if target_w < 100 or target_h < 100:
@@ -158,7 +174,7 @@ def update_frame():
 
     root.after(10, update_frame)
 
-# Starten
+# Starte GUI
 update_frame()
 root.mainloop()
 cap.release()
